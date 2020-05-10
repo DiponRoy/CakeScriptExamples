@@ -1,0 +1,126 @@
+#addin nuget:?package=Cake.FileHelpers&version=3.2.1
+#tool nuget:?package=GitVersion.CommandLine&version=5.1.2
+#tool nuget:?package=NUnit.ConsoleRunner&version=3.4.0
+//////////////////////////////////////////////////////////////////////
+// ARGUMENTS
+//////////////////////////////////////////////////////////////////////
+
+var target = Argument("target", "Default");
+var configuration = Argument("configuration", "Release");
+
+//////////////////////////////////////////////////////////////////////
+// PREPARATION
+//////////////////////////////////////////////////////////////////////
+
+var rootPath = ".";
+var publishPath = rootPath +"/Publish";
+var solution = rootPath +"/kfs.sln";
+
+var projectDetailFileName = "Project.xml";
+var backendProjectPattern = publishPath +"/**/" +projectDetailFileName;
+
+// Define directories.
+var buildDir = Directory(publishPath);
+
+
+//var rootPackageDir = Directory("./Publish") + Directory(configuration);
+//var packageWebAllDir = rootPackageDir + Directory("Web.All");
+
+//////////////////////////////////////////////////////////////////////
+// TASKS
+//////////////////////////////////////////////////////////////////////
+
+Task("Clean")
+    .Does(() =>
+{
+    CleanDirectory(buildDir);
+});
+
+Task("Restore-NuGet-Packages")
+    .Does(() =>
+{
+    NuGetRestore(solution);
+});
+
+Task("Build")
+    .IsDependentOn("Restore-NuGet-Packages")
+	.IsDependentOn("Clean")
+    .Does(() => 
+{
+    MSBuild(solution, settings => settings.SetConfiguration(configuration));
+});
+
+Task("Run-Unit-Tests")
+    .IsDependentOn("Build")
+    .Does(() =>
+{
+	NUnit3("./**/bin/" + configuration + "/Test.Unit.*.dll", new NUnit3Settings { NoResults = true });
+});
+
+
+//////////////////////////////////////////////////////////////////////
+// TASK Local File Publish
+//////////////////////////////////////////////////////////////////////
+Task("Package")
+	.IsDependentOn("Build")
+	.Does(() => {
+
+	MSBuild("./Web.kfs/Web.kfs.csproj", settings =>
+		settings.SetConfiguration(configuration)
+		//.UseToolVersion(MSBuildToolVersion.VS2015)
+		.WithTarget("WebPublish")
+		//.WithProperty("VisualStudioVersion", new string[]{"14.0"})
+		.WithProperty("WebPublishMethod", new string[]{ "FileSystem" })
+		.WithProperty("PublishUrl", new string[]{ Directory("../Publish/Web/Web.kfs").ToString() })
+	);
+});
+
+
+Task("Version")
+   .Does(() => {
+		var versionXmlRegex = "<Version>(.*)</Version>";
+		var commitXmlRegex = "<Commit>(.*)</Commit>";
+		var branchXmlRegex = "<Branch>(.*)</Branch>";
+		var timeStampXmlRegex = "<TimeStamp>(.*)</TimeStamp>";
+
+		GitVersion versionInfo = GitVersion(new GitVersionSettings{ OutputType = GitVersionOutput.Json });
+        var paths = GetFiles(backendProjectPattern).Select(x => x.GetDirectory());
+        foreach(var path in paths)
+        {
+            Information("Build version at C# project: " + path);
+
+            string versionXml = "<Version>"+versionInfo.SemVer+"</Version>";
+            string commitXml = "<Commit>"+versionInfo.Sha+"</Commit>";    
+			string branchXml = "<Branch>"+versionInfo.BranchName+"</Branch>";    
+			string timestampXml = "<TimeStamp>" 
+			+(
+            DateTime.Now.ToString("dd-MMM,yyyy HH:mm:ss") +"(24hr Local)"
+            +", "
+            +DateTime.UtcNow.ToString("dd-MMM,yyyy HH:mm:ss") +"(24hr UTC)"
+			)
+			+"</TimeStamp>";
+
+            /*Project.xml*/
+            ReplaceRegexInFiles(path +"/" +projectDetailFileName, versionXmlRegex, versionXml);
+            ReplaceRegexInFiles(path +"/" +projectDetailFileName, commitXmlRegex, commitXml);
+			ReplaceRegexInFiles(path +"/" +projectDetailFileName, branchXmlRegex, branchXml);
+            ReplaceRegexInFiles(path +"/" +projectDetailFileName, timeStampXmlRegex, timestampXml);
+        }                                   
+   });
+
+//////////////////////////////////////////////////////////////////////
+// TASK TARGETS
+//////////////////////////////////////////////////////////////////////
+
+Task("Default")
+	.IsDependentOn("Clean")
+	.IsDependentOn("Build")
+    .IsDependentOn("Run-Unit-Tests")
+    .IsDependentOn("Package")
+	.IsDependentOn("Version");
+
+
+//////////////////////////////////////////////////////////////////////
+// EXECUTION
+//////////////////////////////////////////////////////////////////////
+RunTarget(target);

@@ -1,0 +1,447 @@
+#tool "nuget:?package=GitVersion.CommandLine&version=5.1.2"
+#tool "nuget:?package=OpenCover&version=4.7.922"
+#tool "nuget:?package=ReportGenerator&version=3.1.2"    /*4.3.9 for .net core 3*/
+#addin "nuget:?package=Cake.FileHelpers&version=3.2.1"
+#addin "nuget:?package=Cake.Npm&version=0.17.0"
+
+
+
+// Target - The task you want to start. Runs the Default task if not specified.
+var target = Argument("Target", "Default"); //Default
+var configuration = Argument("Configuration", "Release");
+var runtime = Argument("Runtime", "--runtime win10-x64");
+Information($"Running target {target} in configuration {configuration}");
+
+var rootPath = ".";
+var solution = rootPath +"/kfs.sln";
+var projectDetailJsonFileName = "project.json";
+var projectDetailXmlFileName = "Project.xml";
+
+var backendProjectAssemblyName = "*.csproj";
+var backendProjectPattern = rootPath +"/**/" +backendProjectAssemblyName;
+var unitTestProjectPattern = rootPath +"/Test.Unit.*/**/" +backendProjectAssemblyName;
+var angularProjectFileName = "package.json";
+
+var publishPath = "." +"/Publish";
+
+var auditPath = publishPath +"/_audit";
+
+var auditResultPath = auditPath +"/Results";
+var unitTestResultPath = auditResultPath +"/UnitTest";
+var codeCoverResultPath = auditResultPath +"/CodeCover";
+var unitTestCoverageResultFilePath = new FilePath(codeCoverResultPath + "/CodeCoverage.xml");
+
+var auditReportPath = auditPath +"/Reports";
+var unitTestReportPath = auditReportPath +"/UnitTest";
+var codeCoverReportPath = auditReportPath +"/CodeCover";
+
+var publishVersionJsonFilePattern = publishPath +"/**/" +projectDetailJsonFileName;
+var publishBranchJsonRegex = "\"(branch)\":\\s*\"((\\\\\"|[^\"])*)\"";
+var publishVersionJsonRegex = "\"(version)\":\\s*\"((\\\\\"|[^\"])*)\"";
+var publishCommitShaJsonRegex = "\"(commit)\":\\s*\"((\\\\\"|[^\"])*)\"";
+var publishTimestampJsonRegex = "\"(timestamp)\":\\s*\"((\\\\\"|[^\"])*)\"";
+
+var publishVersionXmlFilePattern = publishPath +"/**/" +projectDetailXmlFileName;
+var versionXmlRegex = "<Version>(.*)</Version>";
+var commitXmlRegex = "<Commit>(.*)</Commit>";
+var branchXmlRegex = "<Branch>(.*)</Branch>";
+var timeStampXmlRegex = "<TimeStamp>(.*)</TimeStamp>";
+
+
+
+
+public class AngualrProject
+{
+	public bool ShouldRebuildDuringPublish { get; set; }
+	public string SourceDirectoryPath { get; set; }
+    public string ActualPublishDirectoryPath { get; set; }      /*angualr cli build here*/
+	public string PublishDirectoryPath { get; set; }
+}
+
+public class DotNetCoreWebProject
+{
+	public string CsprojFilePath { get; set; }
+	public string PublishDirectoryPath { get; set; }
+    public string DeployAbsolutePath { get; set; }
+}
+
+public class DotNetCoreConsoleProject
+{
+	public string CsprojFilePath { get; set; }
+	public string PublishDirectoryPath { get; set; }
+}
+
+public class DotNetCoreNuGetProject
+{
+	public string CsprojFilePath { get; set; }
+	public string PublishDirectoryPath { get; set; }
+}
+
+List<AngualrProject> angualrProjects = new List<AngualrProject>()
+{
+	new AngualrProject()
+	{
+	   ShouldRebuildDuringPublish = false,
+	   SourceDirectoryPath = rootPath +"/kfs.Admin.Web.Ui/ClientApp",
+       ActualPublishDirectoryPath = rootPath +"/kfs.Admin.Web.Ui/wwwroot",
+       PublishDirectoryPath = publishPath +"/Web/kfs.Admin.Ui",
+	},
+};
+
+List<DotNetCoreConsoleProject> exeProjects = new List<DotNetCoreConsoleProject>()
+{
+
+};
+
+
+List<DotNetCoreWebProject> webProjects = new List<DotNetCoreWebProject>()
+{	
+	new DotNetCoreWebProject()
+	{
+		CsprojFilePath = rootPath +"/kfs.Admin.Web.Api/kfs.Admin.Web.Api.csproj",
+        PublishDirectoryPath = publishPath +"/Web/kfs.Admin.Api",
+	},
+};
+
+
+
+public void CreateOrCleanDirectory(string path)
+{
+    var dir = Directory(path);
+    if (!DirectoryExists(dir))
+    {
+        CreateDirectory(dir);
+    }
+    else
+    {
+        CleanDirectory(dir);        
+    }
+}
+
+GitVersion versionInfo = GitVersion(new GitVersionSettings{ OutputType = GitVersionOutput.Json });
+
+// Deletes the contents of the Publish folder if it contains anything from a previous build.
+Task("Clean")
+    .Does(() =>
+    {
+        /*clean bin, obj, and unit test results folders*/
+        var paths = GetFiles(backendProjectPattern).Select(x => x.GetDirectory());
+        foreach(var path in paths)
+        {
+            CleanDirectories(path + "/bin");
+            CleanDirectories(path + "/obj");
+            //CleanDirectories(path + "/wwwroot"); /*not a good idea, razor projects may have static files*/
+        }
+        paths = GetFiles(unitTestProjectPattern).Select(x => x.GetDirectory());
+        foreach(var path in paths)
+        {
+            CleanDirectories(path + "/TestResults");
+        }
+
+        /*clean publish folder*/
+        CreateOrCleanDirectory(publishPath);
+    });
+
+// Run dotnet restore to restore all backend package references.
+Task("Restore-Backend")
+    .Does(() =>
+    {
+		NuGetRestore(solution);
+        DotNetCoreRestore(rootPath);
+    });
+
+//Install NPM packages    
+Task("Restore-Frontend")
+    .Does(() =>
+    {       
+        //restore npm packages
+        foreach(AngualrProject project in angualrProjects)
+        {
+            Information("Angalr project npm install: " + project.SourceDirectoryPath);
+            var npmInstallSettings = new NpmInstallSettings 
+            {
+                WorkingDirectory = Directory(project.SourceDirectoryPath),
+                LogLevel = NpmLogLevel.Warn,
+                ArgumentCustomization = args => args.Append("--no-save")
+            };
+            NpmInstall(npmInstallSettings);      
+        }
+    });
+
+//Restore all
+Task("Restore")
+    //.IsDependentOn("Restore-Frontend")
+    .IsDependentOn("Restore-Backend");
+   
+
+// Build c# code using the build configuration specified as an argument.
+ Task("Build-Backend")
+    .Does(() =>
+    {
+		List<string> oldFrameworkProjects = new List<string>();
+		List<string> coreProjects = new List<string>();
+		foreach(var file in GetFiles(backendProjectPattern))
+        {	
+			string version = "";
+			version = XmlPeek(file, "/Project[starts-with(@Sdk, 'Microsoft.NET.Sdk')]");	
+			string path = file.ToString();
+			if(string.IsNullOrEmpty(version))
+			{
+				//Information("Old: " +path);
+				oldFrameworkProjects.Add(path);
+			}
+			else
+			{
+				//Information("New: " +path);
+				coreProjects.Add(path);
+			}
+        }
+		
+		/*build .Net Framework projects*/
+		foreach(var project in oldFrameworkProjects)
+        {
+			MSBuild(project, settings => settings.SetConfiguration(configuration));
+			/*
+			MSBuild(project, configurator =>
+				configurator.SetConfiguration(configuration)
+					.SetVerbosity(Verbosity.Minimal)
+					.UseToolVersion(MSBuildToolVersion.VS2015)
+					.SetMSBuildPlatform(MSBuildPlatform.x86)
+					.SetPlatformTarget(PlatformTarget.MSIL));		
+			*/
+        }
+		
+		/*build .Net Framework Core projects*/
+		foreach(var project in coreProjects)
+        {
+			 DotNetCoreBuild(project,
+				 new DotNetCoreBuildSettings()
+				 {
+					 Configuration = configuration,
+					 /*remove it, if needed*/
+					 ArgumentCustomization = args => args.Append("--no-restore"),
+				 });
+        }
+    });
+
+// Build angular.
+Task("Build-Frontend")
+    .Does(() =>
+    {
+        //Build Angular frontend project using Angular cli
+        foreach(AngualrProject project in angualrProjects)
+        {
+            Information("Angalr project ng build: " + project.SourceDirectoryPath);
+            var runSettings = new NpmRunScriptSettings 
+            {
+                ScriptName = "ng",
+                WorkingDirectory = Directory(project.SourceDirectoryPath),
+                LogLevel = NpmLogLevel.Warn
+            };
+            runSettings.Arguments.Add("build");
+            NpmRunScript(runSettings);    
+        }
+    });
+
+
+//Build all
+Task("Build")
+    .IsDependentOn("Build-Frontend")
+    .IsDependentOn("Build-Backend");
+
+
+
+// Look under a 'Tests' folder and run dotnet test against all of those projects.
+// Then drop the XML test results file in the Artifacts folder at the root.
+Task("Test-Backend")
+    .Does(() =>
+    {
+        CreateOrCleanDirectory(unitTestResultPath);     
+        CreateOrCleanDirectory(codeCoverResultPath);     
+
+        var openCoverSettings = new OpenCoverSettings
+        {
+            OldStyle = true,
+            MergeOutput = true,
+            SkipAutoProps = true,
+            //MergeByHash = true,
+        }
+        //.WithFilter("+[*]*") /*all*/ 
+        .WithFilter("+[Utility.*]*")
+        // .WithFilter("-[Test.*]*")
+        ;
+        var dotNetCoreTestSettings= new DotNetCoreTestSettings()
+        {
+            Configuration = configuration,
+            ResultsDirectory = Directory(unitTestResultPath),
+            NoBuild = true,
+            ArgumentCustomization = args => args.Append("-l trx")
+        };
+        var unitTestProjects = GetFiles(unitTestProjectPattern);
+        foreach(var project in unitTestProjects)
+        {
+            Information("Testing project " + project);
+            /*only test and report*/
+            //DotNetCoreTest(project.FullPath, dotNetCoreTestSettings);
+            /*test cover report*/
+            OpenCover(context => { context.DotNetCoreTest(project.FullPath, dotNetCoreTestSettings); }, unitTestCoverageResultFilePath, openCoverSettings);
+        }
+    });
+
+
+Task("Test-Frontend")
+    .Does(() =>
+    {
+        // TODO: Set up Jasmine + Karma + Headless Chrome properly
+        Information("Frontend testing framework not yet configured. Skipping this step.");
+    });
+
+//Test all
+Task("Test")
+    .IsDependentOn("Test-Frontend")
+	.IsDependentOn("Test-Backend");
+
+//publish angualr apps
+ Task("Publish-Frontend")
+    .Does(() => 
+    {
+        foreach(AngualrProject project in angualrProjects)
+        {
+		
+			if(project.ShouldRebuildDuringPublish)
+			{
+				Information("Angalr project ng build --prod: " + project.SourceDirectoryPath);
+				var runSettings = new NpmRunScriptSettings 
+				{
+					ScriptName = "ng",
+					WorkingDirectory = Directory(project.SourceDirectoryPath),
+					LogLevel = NpmLogLevel.Warn
+				};
+				runSettings.Arguments.Add("build");
+				runSettings.Arguments.Add("--prod");
+				runSettings.Arguments.Add("--build-optimizer");
+				runSettings.Arguments.Add("--progress false");
+				//runSettings.Arguments.Add("--output-path customDist");    /*absolute doesn't work*/
+				NpmRunScript(runSettings);  			
+			}  
+
+            /*copy build files to publish location*/
+            if(!string.IsNullOrEmpty(project.ActualPublishDirectoryPath) && !string.IsNullOrEmpty(project.PublishDirectoryPath))
+            {
+                CreateOrCleanDirectory(project.PublishDirectoryPath);
+				CopyFiles(project.ActualPublishDirectoryPath +"/**/*", project.PublishDirectoryPath, true);
+            }
+        }
+    });
+
+/*create exe*/
+ Task("Publish-Exe")   
+    .Does(() => 
+    {
+        foreach(DotNetCoreConsoleProject project in exeProjects)
+        {
+            Information("Publish exe project: " +project.CsprojFilePath);
+            DotNetCorePublish(
+                project.CsprojFilePath,
+                new DotNetCorePublishSettings()
+                {
+                    Configuration = configuration,
+                    OutputDirectory = Directory(project.PublishDirectoryPath),
+                    ArgumentCustomization = args => args.Append(runtime),
+                    // ArgumentCustomization = args => args.Append("--no-restore"),
+                    // ArgumentCustomization = args => args.Append(runtime).Append("--no-restore"),
+                });
+        }  
+    });
+
+//publish web projects
+ Task("Publish-Web")
+    .Does(() => 
+    {
+        foreach(DotNetCoreWebProject project in webProjects)
+        {
+            Information("Publish web project: " +project.CsprojFilePath);
+            DotNetCorePublish(
+                project.CsprojFilePath,
+                new DotNetCorePublishSettings()
+                {
+                    Configuration = configuration,
+                    OutputDirectory = Directory(project.PublishDirectoryPath),
+                    ArgumentCustomization = args => args.Append(runtime),
+                });
+        }
+
+        MSBuild(rootPath +"/kfs/kfs.csproj", settings =>
+            settings.SetConfiguration(configuration)
+            //.UseToolVersion(MSBuildToolVersion.VS2015)
+            .WithTarget("WebPublish")
+            //.WithProperty("VisualStudioVersion", new string[]{"14.0"})
+            .WithProperty("WebPublishMethod", new string[]{ "FileSystem" })
+            .WithProperty("PublishUrl", new string[]{ Directory("." +publishPath +"/Web/kfs.Report").ToString() })
+	    );
+    }); 
+
+ // add project version from git branch to project.json after publish
+Task("Set-Publish-Version")
+    .Does(() => {
+        string version = "version".Quote() +": " +versionInfo.SemVer.Quote();  
+        string commit = "commit".Quote() +": " +versionInfo.Sha.Quote();     
+        string branchName = "branch".Quote() +": " +versionInfo.BranchName.Quote();
+        string timestamp = "timestamp".Quote() +": " +(
+            DateTime.Now.ToString("dd-MMM,yyyy HH:mm:ss") +"(24hr Local)"
+            +", "
+            +DateTime.UtcNow.ToString("dd-MMM,yyyy HH:mm:ss") +"(24hr UTC)"
+        ).Quote();
+        foreach(var projectJson in GetFiles(publishVersionJsonFilePattern))
+        {      
+            string path = projectJson.ToString();
+            ReplaceRegexInFiles(path, publishVersionJsonRegex, version);
+            ReplaceRegexInFiles(path, publishCommitShaJsonRegex, commit);                       
+            ReplaceRegexInFiles(path, publishBranchJsonRegex, branchName);        
+            ReplaceRegexInFiles(path, publishTimestampJsonRegex, timestamp);                                      
+        }
+		
+		
+		string versionXml = "<Version>"+versionInfo.SemVer+"</Version>";
+		string commitXml = "<Commit>"+versionInfo.Sha+"</Commit>";    
+		string branchXml = "<Branch>"+versionInfo.BranchName+"</Branch>";    
+		string timestampXml = "<TimeStamp>" 
+		+(
+		DateTime.Now.ToString("dd-MMM,yyyy HH:mm:ss") +"(24hr Local)"
+		+", "
+		+DateTime.UtcNow.ToString("dd-MMM,yyyy HH:mm:ss") +"(24hr UTC)"
+		)
+		+"</TimeStamp>";
+        foreach(var projectXml in GetFiles(publishVersionXmlFilePattern))
+        {
+            /*Project.xml*/
+			string path = projectXml.ToString();
+            ReplaceRegexInFiles(path, versionXmlRegex, versionXml);
+            ReplaceRegexInFiles(path, commitXmlRegex, commitXml);
+			ReplaceRegexInFiles(path, branchXmlRegex, branchXml);
+            ReplaceRegexInFiles(path, timeStampXmlRegex, timestampXml);
+        }	
+    });     
+
+// Publish the app to the /Publish folder
+Task("Publish")
+    .IsDependentOn("Publish-Frontend")
+    .IsDependentOn("Publish-Exe")
+    .IsDependentOn("Publish-Web")
+    .IsDependentOn("Set-Publish-Version");
+
+// A meta-task that runs all the steps to Build and Test the app
+Task("BuildAndTest")
+    .IsDependentOn("Clean")
+    .IsDependentOn("Restore") 
+    .IsDependentOn("Build")
+    .IsDependentOn("Test");
+
+// The default task to run if none is explicitly specified. In this case, we want
+// to run everything starting from Clean, all the way up to Publish.
+Task("Default")
+    .IsDependentOn("BuildAndTest")
+    .IsDependentOn("Publish");
+
+// Executes the task specified in the target argument.
+RunTarget(target);

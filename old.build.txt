@@ -1,0 +1,121 @@
+#tool nuget:?package=NUnit.ConsoleRunner&version=3.4.0
+//////////////////////////////////////////////////////////////////////
+// ARGUMENTS
+//////////////////////////////////////////////////////////////////////
+
+var target = Argument("target", "Default");
+var configuration = Argument("configuration", "Release");
+
+//////////////////////////////////////////////////////////////////////
+// PREPARATION
+//////////////////////////////////////////////////////////////////////
+
+var rootPath = ".";
+var publishPath = "./Publish";
+var solution = "./CakeUse.sln";
+
+// Define directories.
+var buildDir = Directory(publishPath);
+
+
+//var rootPackageDir = Directory("./Publish") + Directory(configuration);
+//var packageWebAllDir = rootPackageDir + Directory("Web.All");
+
+//////////////////////////////////////////////////////////////////////
+// TASKS
+//////////////////////////////////////////////////////////////////////
+
+Task("Clean")
+    .Does(() =>
+{
+    CleanDirectory(buildDir);
+});
+
+Task("Restore-NuGet-Packages")
+    .IsDependentOn("Clean")
+    .Does(() =>
+{
+    NuGetRestore(solution);
+});
+
+Task("Build")
+    .IsDependentOn("Restore-NuGet-Packages")
+    .Does(() =>
+{
+    MSBuild(solution, settings =>
+        settings.SetConfiguration(configuration));
+
+    // if(IsRunningOnWindows())
+    // {
+    //   // Use MSBuild
+    //   MSBuild(solution, settings =>
+    //     settings.SetConfiguration(configuration));
+    // }
+    // else
+    // {
+    //   // Use XBuild
+    //   XBuild(solution, settings =>
+    //     settings.SetConfiguration(configuration));
+    // }
+});
+
+Task("Run-Unit-Tests")
+    .IsDependentOn("Build")
+    .Does(() =>
+{
+    //NUnit3("./src/**/bin/" + configuration + "/*.Tests.dll", new NUnit3Settings { NoResults = true });
+	NUnit3("./**/bin/" + configuration + "/Test.Unit.*.dll", new NUnit3Settings { NoResults = true });
+});
+
+
+//////////////////////////////////////////////////////////////////////
+// TASK Local File Publish
+//////////////////////////////////////////////////////////////////////
+Task("Package")
+.IsDependentOn("Run-Unit-Tests")
+.Does(() => {
+
+// MSBuild("./Web.All/Web.All.csproj", new MSBuildSettings()
+//   .WithProperty("OutDir", Directory("./Publish/Web.All").ToString())
+//   .WithProperty("DeployOnBuild", "true")
+//   .WithProperty("WebPublishMethod", "Package")
+//   .WithProperty("PackageAsSingleFile", "true")
+//   .WithProperty("SkipInvalidConfigurations", "true"));
+
+// MSBuild("./Web.All/Web.All.csproj", settings =>
+//     settings.SetConfiguration(configuration)
+//     .WithProperty("DeployTarget", "WebPublish")
+//     // .WithProperty("DeployOnBuild", true)
+//     // .WithProperty("PackageAsSingleFile", /**boolean**/)
+//     .WithProperty("WebPublishMethod", "FileSystem")
+//     // .WithProperty("PublishUrl", Directory("./Publish/Web.All").ToString()));
+//     //.WithProperty("PublishUrl", "./Publish/Web.All")
+//       //.WithProperty("OutDir", Directory("./Publish/Web.All"))
+//       .WithProperty("_PackageTempDir", Directory("./Publish/Web.All"))
+
+//     );
+MSBuild("./Web.All/Web.All.csproj", new MSBuildSettings()
+    .WithTarget("WebPublish")
+  .WithProperty("Configuration",configuration)
+  .WithProperty("_PackageTempDir", Directory("./Publish/Web.All"))
+  //.WithProperty("SolutionDir","../")
+  );
+
+});
+
+//////////////////////////////////////////////////////////////////////
+// TASK TARGETS
+//////////////////////////////////////////////////////////////////////
+
+Task("Default")
+    //.IsDependentOn("Run-Unit-Tests");
+    .IsDependentOn("Package");
+
+
+//////////////////////////////////////////////////////////////////////
+// EXECUTION
+//////////////////////////////////////////////////////////////////////
+
+
+
+RunTarget(target);
