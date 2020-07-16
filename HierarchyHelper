@@ -1,0 +1,81 @@
+/*
+ * Links:
+ * parents: https://stackoverflow.com/questions/34730349/finding-parents-in-a-tree-hierarchy-for-a-given-child-linq-lambda-expression
+ * circular-references: https://stackoverflow.com/questions/46484725/most-efficient-way-of-finding-circular-references-in-list
+ */
+
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+namespace Cfs.Admin.Web.Api.Helpers
+{
+    /// <summary>
+    /// Hierarchy manager
+    /// </summary>
+    public class HierarchyHelper
+    {
+
+
+        /// <summary>
+        /// Find parents of a child
+        /// </summary>
+        /// <param name="data">all data list(child, parent)</param>
+        /// <param name="child">child</param>
+        /// <returns>
+        /// parent list
+        /// </returns>
+        private static IEnumerable<string> FindParentsRecursion(Dictionary<string, string> data, string child)
+        {
+            if (!data.ContainsKey(child))
+            {
+                return Enumerable.Empty<string>();
+            }
+            var parent = data[child];
+            return new[] { parent }.Concat(FindParentsRecursion(data, parent));
+        }
+
+        /// <summary>
+        /// Find parents of a child
+        /// </summary>
+        /// <param name="data">all data list(child, parent)</param>
+        /// <param name="child">child</param>
+        /// <returns>
+        /// parent list
+        /// </returns>
+        public static List<string> FindParents(Dictionary<string, string> data, string child)
+        {
+            var list = FindParentsRecursion(data, child).Where(x => !String.IsNullOrEmpty(x)).ToList();
+            return list;
+
+        }
+
+        /// <summary>
+        /// Returns a node that is part of a cycle or null if no cycle is found
+        /// </summary>
+        public static string FindCycle(string start, Dictionary<string, string> successors, HashSet<string> stackVisited, HashSet<string> previouslyVisited)
+        {
+            string current = start;
+            while (current != null)
+            {
+                if (previouslyVisited.Contains(current))
+                {
+                    return null;
+                }
+                if (stackVisited.Contains(current))
+                {
+                    // this node is part of a cycle
+                    return current;
+                }
+
+                stackVisited.Add(current);
+
+                successors.TryGetValue(current, out current);
+            }
+
+            return null;
+        }
+    }
+}
